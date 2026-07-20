@@ -1,0 +1,26 @@
+{
+  "name": "drivman-backend",
+  "version": "0.1.0",
+  "description": "DRIVMAN — Backend API (Phase 4, not yet started). Folder structure and dependencies are pre-set so setup is ready the moment Phase 4 begins.",
+  "main": "server.js",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mongoose": "^8.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.9.13",
+    "cloudinary": "^2.2.0",
+    "razorpay": "^2.9.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express-rate-limit": "^7.2.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
