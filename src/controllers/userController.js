@@ -1,378 +1,359 @@
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import { User } from "../models/user.model.js";
 import {
-  sendOtpSms,
-  checkOtp,
-  OTP_EXPIRY_MINUTES,
-} from "../services/otpServices.js";
+    User,
+    CUSTOMER_STATUS_FILTERS,
+    CUSTOMER_STATUS_LABELS,
+} from "../models/user.model.js";
+import { Order } from "../models/order.model.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
+import { ok, created } from "../utils/ApiResponse.js";
+import { badRequest, notFound } from "../utils/ApiError.js";
+import {
+    requireFields,
+    assertObjectId,
+    isValidPhone,
+    parsePagination,
+    buildMeta,
+} from "../utils/validators.js";
 
-const PENDING_VERIFICATION_TOKEN_EXPIRY = `${OTP_EXPIRY_MINUTES}m`;
+/** @route GET /api/users/profile */
+export const getProfile = asyncHandler(async (req, res) =>
+    ok(res, { user: req.user }, "Profile fetched."),
+);
 
-// Normal session token, issued after verification / on login
-const FULL_SESSION_TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || "7d";
+/**
+ * @route PATCH /api/users/profile   Body: { fullName?, phone? }
+ * Email is intentionally NOT editable here — changing it would require a fresh
+ * verification cycle, which belongs in its own flow.
+ */
+export const updateProfile = asyncHandler(async (req, res) => {
+    const { fullName, phone } = req.body;
 
-const generateToken = (id, expiresIn = FULL_SESSION_TOKEN_EXPIRY) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn });
-};
+    if (fullName === undefined && phone === undefined) {
+        throw badRequest("Provide at least one of: fullName, phone.");
+    }
 
-const cookieOptions = (maxAgeMs = 7 * 24 * 60 * 60 * 1000) => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production", // HTTPS only in prod
-  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-  maxAge: maxAgeMs,
+    const user = await User.findById(req.user._id);
+
+    if (fullName !== undefined) {
+        if (String(fullName).trim().length < 2) {
+            throw badRequest("Full name must be at least 2 characters.");
+        }
+        user.fullName = String(fullName).trim();
+    }
+
+    if (phone !== undefined && phone !== user.phone) {
+        if (!isValidPhone(phone)) {
+            throw badRequest("Phone must be in E.164 format, e.g. +919876543210.");
+        }
+        if (await User.exists({ phone: phone.trim(), _id: { $ne: user._id } })) {
+            throw badRequest("That phone number is already in use.");
+        }
+        user.phone = phone.trim();
+        // A new number is unproven until an OTP confirms it.
+        user.isPhoneVerified = false;
+    }
+
+    await user.save();
+    return ok(res, { user }, "Profile updated.");
+});
+
+// --- Addresses ---------------------------------------------------------------
+
+/** @route GET /api/users/addresses */
+export const listAddresses = asyncHandler(async (req, res) =>
+    ok(res, { addresses: req.user.addresses, count: req.user.addresses.length }, "Addresses fetched."),
+);
+
+/**
+ * @route POST /api/users/addresses
+ * The first address a user saves automatically becomes their default.
+ */
+export const addAddress = asyncHandler(async (req, res) => {
+    requireFields(req.body, ["fullName", "phone", "line1", "city", "state", "postalCode"]);
+
+    const user = await User.findById(req.user._id);
+    const makeDefault = req.body.isDefault === true || user.addresses.length === 0;
+
+    if (makeDefault) user.addresses.forEach((a) => (a.isDefault = false));
+
+    user.addresses.push({ ...req.body, isDefault: makeDefault });
+    await user.save();
+
+    return created(
+        res,
+        { address: user.addresses.at(-1), addresses: user.addresses },
+        "Address added.",
+    );
+});
+
+/** @route PATCH /api/users/addresses/:addressId */
+export const updateAddress = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    const address = user.addresses.id(req.params.addressId);
+    if (!address) throw notFound("Address not found.");
+
+    const editable = [
+        "label", "fullName", "phone", "line1", "line2",
+        "city", "state", "postalCode", "country",
+    ];
+    editable.forEach((f) => {
+        if (req.body[f] !== undefined) address[f] = req.body[f];
+    });
+
+    if (req.body.isDefault === true) {
+        user.addresses.forEach((a) => (a.isDefault = false));
+        address.isDefault = true;
+    }
+
+    await user.save();
+    return ok(res, { address, addresses: user.addresses }, "Address updated.");
 });
 
 /**
- * Shared helper: issues JWT + cookie + response for any successful
- * signup or login. Defaults to a full 7-day session token.
- * Pass a shorter tokenExpiresIn (e.g. "2m") for the pending-verification
- * token issued right after signup.
+ * @route DELETE /api/users/addresses/:addressId
+ * Deleting the default promotes the next address so the user is never left
+ * without one.
  */
-const issueSession = (
-  res,
-  user,
-  message,
-  statusCode = 200,
-  tokenExpiresIn = FULL_SESSION_TOKEN_EXPIRY,
-) => {
-  const token = generateToken(user._id, tokenExpiresIn);
+export const deleteAddress = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    const address = user.addresses.id(req.params.addressId);
+    if (!address) throw notFound("Address not found.");
 
-  const userResponse = user.toObject();
-  delete userResponse.password;
-  delete userResponse.otp;
-  delete userResponse.otpExpiresAt;
+    const wasDefault = address.isDefault;
+    address.deleteOne();
 
-  // Cookie maxAge in ms — mirror the token's own lifetime so the cookie
-  // doesn't outlive the JWT it holds (2 min for pending, 7 days for full)
-  const cookieMaxAgeMs =
-    tokenExpiresIn === PENDING_VERIFICATION_TOKEN_EXPIRY
-      ? OTP_EXPIRY_MINUTES * 60 * 1000
-      : 7 * 24 * 60 * 60 * 1000;
+    if (wasDefault && user.addresses.length > 0) user.addresses[0].isDefault = true;
 
-  res.cookie("token", token, cookieOptions(cookieMaxAgeMs));
+    await user.save();
+    return ok(res, { addresses: user.addresses }, "Address deleted.");
+});
 
-  return res.status(statusCode).json({
-    success: true,
-    message,
-    user: userResponse,
-    token,
-    expiresIn: tokenExpiresIn,
-  });
+/** @route PATCH /api/users/addresses/:addressId/default */
+export const setDefaultAddress = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    const address = user.addresses.id(req.params.addressId);
+    if (!address) throw notFound("Address not found.");
+
+    user.addresses.forEach((a) => (a.isDefault = false));
+    address.isDefault = true;
+    await user.save();
+
+    return ok(res, { addresses: user.addresses }, "Default address updated.");
+});
+
+// --- Admin -------------------------------------------------------------------
+
+const escapeRegex = (value) => String(value).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const CUSTOMER_SORT_MAP = {
+    newest: { createdAt: -1 },
+    oldest: { createdAt: 1 },
+    name_asc: { fullName: 1 },
+    name_desc: { fullName: -1 },
 };
 
 /**
- * @route POST /api/users/signup
- * Creates the account and issues a short-lived (2 min) pending token —
- * enough to call verify-signup-otp, but it expires on its own if the
- * user doesn't verify in time. isActive stays false, and protected
- * routes stay locked, until verification succeeds.
+ * An order counts towards a customer's history once it is real money:
+ * `pending` means an online checkout that was never paid for, and `cancelled`
+ * was refunded or never collected. Neither belongs in "4 orders · ₹28,450".
  */
-export const signup = async (req, res) => {
-  try {
-    const { fullName, email, phone, password } = req.body;
-
-    if (!fullName || !email || !phone || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "fullName, email, phone and password are all required.",
-      });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be at least 6 characters long.",
-      });
-    }
-
-    const existingUser = await User.findOne({
-      $or: [{ email: email.toLowerCase() }, { phone }],
-    });
-
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message:
-          existingUser.email === email.toLowerCase()
-            ? "Email is already registered."
-            : "Phone number is already registered.",
-      });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    const newUser = await User.create({
-      fullName,
-      email,
-      phone,
-      password: hashedPassword,
-      // isActive stays false until OTP is verified
-    });
-
-    // Everything past this point is "post-creation" — if any of it
-    // throws, we roll back the user we just created rather than
-    // leaving an orphaned account blocking future signups with
-    // this email/phone.
-    try {
-      // Trigger Twilio Verify to generate + send the OTP.
-      // Twilio owns the OTP's storage and expiry from here — we don't.
-      sendOtpSms(phone).catch(() => {
-        // Non-fatal: user can request a fresh OTP later via /send-otp.
-        // Not awaited so a slow/failed SMS provider never blocks signup.
-      });
-
-      return issueSession(
-        res,
-        newUser,
-        `Account created. Please verify the OTP sent to your phone within ${OTP_EXPIRY_MINUTES} minutes.`,
-        201,
-        PENDING_VERIFICATION_TOKEN_EXPIRY,
-      );
-    } catch (postCreateError) {
-      await User.deleteOne({ _id: newUser._id });
-      throw postCreateError; // let the outer catch below format the response
-    }
-  } catch (error) {
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      return res.status(409).json({
-        success: false,
-        message: `${field} is already registered.`,
-      });
-    }
-    return res.status(500).json({
-      success: false,
-      message: "Signup failed.",
-      error: error.message,
-    });
-  }
-};
+const COUNTED_ORDER_STATUSES = { $nin: ["pending", "cancelled"] };
 
 /**
- * @route POST /api/users/verify-signup-otp
- * Body: { phone, otp }
- * Asks Twilio Verify to confirm the OTP, then marks the phone as
- * verified (isActive: true) and issues a fresh full-length session token.
+ * Turns a `?status=` value into an `isActive` condition. Returns null for
+ * "all" / absent, meaning "don't filter".
  */
-export const verifySignupOtp = async (req, res) => {
-  try {
-    const { phone, otp } = req.body;
+const resolveCustomerStatus = (value) => {
+    if (value === undefined || value === null || value === "") return null;
 
-    if (!phone || !otp) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number and OTP are required.",
-      });
-    }
+    const key = String(value).trim().toLowerCase();
+    if (key === "all") return null;
+    if (key in CUSTOMER_STATUS_FILTERS) return CUSTOMER_STATUS_FILTERS[key];
 
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid or expired OTP.",
-      });
-    }
-
-    const isApproved = await checkOtp(phone, otp);
-    if (!isApproved) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid or expired OTP. Please request a new one.",
-      });
-    }
-
-    user.isActive = true;
-    await user.save({ validateBeforeSave: false });
-
-    return issueSession(
-      res,
-      user,
-      "Phone number verified successfully. You now have full access.",
-      200,
-      // no tokenExpiresIn override — defaults to full 7-day session
+    throw badRequest(
+        `status must be one of: all, ${Object.keys(CUSTOMER_STATUS_FILTERS).join(", ")}.`,
     );
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "OTP verification failed.",
-      error: error.message,
-    });
-  }
+};
+
+const parseBoolean = (value, field) => {
+    if (typeof value === "boolean") return value;
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw badRequest(`"${field}" must be true or false.`);
 };
 
 /**
- * @route POST /api/users/login
- * Returning-user login. Body must include "phone", plus EITHER
- * "password" OR "otp" — whichever the user chooses.
- * Email-based login is intentionally not supported here since the
- * product flow is phone + password/OTP only.
+ * The three header tiles and the counts behind the status dropdown, in one
+ * pass. Deliberately covers the whole customer base rather than the current
+ * page or search — the tiles report the shop, not the query.
  */
-export const login = async (req, res) => {
-  try {
-    const { phone, password, otp } = req.body;
+const buildCustomerSummary = async () => {
+    const [counts] = await User.aggregate([
+        { $match: { role: "user" } },
+        {
+            $group: {
+                _id: null,
+                total: { $sum: 1 },
+                active: { $sum: { $cond: ["$isActive", 1, 0] } },
+                blocked: { $sum: { $cond: ["$isActive", 0, 1] } },
+            },
+        },
+        { $project: { _id: 0 } },
+    ]);
 
-    if (!phone || (!password && !otp)) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number and either a password or OTP are required.",
-      });
-    }
+    const { total, active, blocked } = counts || { total: 0, active: 0, blocked: 0 };
 
-    if (password && otp) {
-      return res.status(400).json({
-        success: false,
-        message: "Provide either a password or an OTP, not both.",
-      });
-    }
-
-    if (password) {
-      const user = await User.findOne({ phone }).select("+password");
-
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: "Invalid credentials.",
-        });
-      }
-
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(401).json({
-          success: false,
-          message: "Invalid credentials.",
-        });
-      }
-
-      return issueSession(res, user, "Logged in successfully.");
-    }
-
-    // OTP path
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid or expired OTP.",
-      });
-    }
-
-    const isApproved = await checkOtp(phone, otp);
-    if (!isApproved) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid or expired OTP.",
-      });
-    }
-
-    return issueSession(res, user, "Logged in successfully.");
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Login failed.",
-      error: error.message,
-    });
-  }
+    return {
+        total,
+        active,
+        blocked,
+        statuses: [
+            { value: "all", label: CUSTOMER_STATUS_LABELS.all, count: total },
+            { value: "active", label: CUSTOMER_STATUS_LABELS.active, count: active },
+            { value: "blocked", label: CUSTOMER_STATUS_LABELS.blocked, count: blocked },
+        ],
+    };
 };
 
 /**
- * @route POST /api/users/logout
+ * @route GET /api/users/admin/customers — admin only.
+ * The customers table: searchable by name, email or phone, filterable by
+ * status, paginated, with each row carrying its lifetime order count and spend.
+ *
+ * Query: page, limit, search, status (all|active|blocked),
+ *        sort (newest|oldest|name_asc|name_desc)
  */
-export const logout = async (req, res) => {
-  try {
-    res.clearCookie("token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    });
+export const listCustomers = asyncHandler(async (req, res) => {
+    const { page, limit, skip } = parsePagination(req.query);
+    const { search, sort = "newest" } = req.query;
 
-    return res.status(200).json({
-      success: true,
-      message: "Logged out successfully.",
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Logout failed.",
-      error: error.message,
-    });
-  }
-};
+    // Staff accounts are not customers — this table is the shop's address book.
+    const filter = { role: "user" };
 
-/**
- * @route GET /api/users/me
- * Requires isAuthenticated middleware — returns current logged-in user
- */
-export const getMe = async (req, res) => {
-  try {
-    return res.status(200).json({
-      success: true,
-      user: req.user,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Could not fetch user.",
-      error: error.message,
-    });
-  }
-};
+    const isActive = resolveCustomerStatus(req.query.status);
+    if (isActive !== null) filter.isActive = isActive;
 
-/**
- * @route POST /api/users/send-otp
- * Body: { phone: "+919876543210" }
- * Triggers Twilio Verify to generate + send a fresh OTP.
- * If the user isn't verified yet, also reissues a fresh short-lived
- * pending token (their original signup token may have already expired).
- */
-export const sendOtp = async (req, res) => {
-  try {
-    const { phone } = req.body;
-
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number is required.",
-      });
+    if (search) {
+        const re = new RegExp(escapeRegex(search), "i");
+        filter.$or = [{ fullName: re }, { email: re }, { phone: re }];
     }
 
-    // Same generic response whether user exists or not —
-    // prevents attackers from using this endpoint to discover
-    // which phone numbers are registered.
-    const user = await User.findOne({ phone });
+    const [customers, total, summary] = await Promise.all([
+        User.aggregate([
+            { $match: filter },
+            { $sort: CUSTOMER_SORT_MAP[sort] || CUSTOMER_SORT_MAP.newest },
+            // Paginate BEFORE the lookup so order history is rolled up for the
+            // rows being shown, not for every customer in the database.
+            { $skip: skip },
+            { $limit: limit },
+            {
+                $lookup: {
+                    from: Order.collection.name,
+                    let: { userId: "$_id" },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: { $eq: ["$user", "$$userId"] },
+                                status: COUNTED_ORDER_STATUSES,
+                            },
+                        },
+                        {
+                            $group: {
+                                _id: null,
+                                count: { $sum: 1 },
+                                spent: { $sum: "$grandTotal" },
+                            },
+                        },
+                    ],
+                    as: "orderSummary",
+                },
+            },
+            {
+                // Aggregation bypasses the schema's toJSON transform, so the
+                // safe fields are listed explicitly rather than excluded.
+                $project: {
+                    fullName: 1,
+                    email: 1,
+                    phone: 1,
+                    isActive: 1,
+                    isEmailVerified: 1,
+                    isPhoneVerified: 1,
+                    lastLoginAt: 1,
+                    createdAt: 1,
+                    status: { $cond: ["$isActive", "active", "blocked"] },
+                    ordersCount: { $ifNull: [{ $arrayElemAt: ["$orderSummary.count", 0] }, 0] },
+                    totalSpent: {
+                        $round: [{ $ifNull: [{ $arrayElemAt: ["$orderSummary.spent", 0] }, 0] }, 2],
+                    },
+                },
+            },
+        ]),
+        User.countDocuments(filter),
+        buildCustomerSummary(),
+    ]);
 
-    if (user) {
-      try {
-        await sendOtpSms(phone);
-      } catch (smsError) {
-        return res.status(502).json({
-          success: false,
-          message: "Failed to send OTP. Please try again.",
-        });
-      }
+    return ok(
+        res,
+        { customers, meta: buildMeta(page, limit, total), summary },
+        "Customers fetched.",
+    );
+});
 
-      // Not yet verified (still mid-signup) — give them a fresh
-      // pending token too, since their original one may have expired.
-      if (!user.isActive) {
-        return issueSession(
-          res,
-          user,
-          `A new OTP has been sent. Please verify within ${OTP_EXPIRY_MINUTES} minutes.`,
-          200,
-          PENDING_VERIFICATION_TOKEN_EXPIRY,
-        );
-      }
+/** @route GET /api/users — admin only. */
+export const listUsers = asyncHandler(async (req, res) => {
+    const { page, limit, skip } = parsePagination(req.query);
+    const filter = {};
+
+    if (req.query.role) filter.role = req.query.role;
+    if (req.query.search) {
+        const re = new RegExp(escapeRegex(req.query.search), "i");
+        filter.$or = [{ fullName: re }, { email: re }, { phone: re }];
     }
 
-    return res.status(200).json({
-      success: true,
-      message: "If this phone number is registered, an OTP has been sent.",
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Could not process OTP request.",
-      error: error.message,
-    });
-  }
-};
+    const [users, total] = await Promise.all([
+        User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+        User.countDocuments(filter),
+    ]);
+
+    return ok(res, { users, meta: buildMeta(page, limit, total) }, "Users fetched.");
+});
+
+/**
+ * @route PATCH /api/users/:id/status — admin only.
+ * Body: { isActive } · { blocked } · or empty to flip the current state, which
+ * is what the block button in the customers table sends.
+ *
+ * Returns the refreshed summary so the header tiles move with the table
+ * without a second round trip.
+ */
+export const setUserStatus = asyncHandler(async (req, res) => {
+    const userId = assertObjectId(req.params.id, "user id");
+    const { isActive, blocked } = req.body ?? {};
+
+    const user = await User.findById(userId).select("+refreshTokens");
+    if (!user) throw notFound("User not found.");
+    if (String(user._id) === String(req.user._id)) {
+        throw badRequest("You cannot change your own account status.");
+    }
+    // Locking staff out of the panel is not a customer-management action, and
+    // getting it wrong can leave the shop with no way back in.
+    if (user.role === "admin") {
+        throw badRequest("Admin accounts cannot be blocked from the customers panel.");
+    }
+
+    if (isActive !== undefined) user.isActive = parseBoolean(isActive, "isActive");
+    else if (blocked !== undefined) user.isActive = !parseBoolean(blocked, "blocked");
+    else user.isActive = !user.isActive;
+
+    // Blocking must end their sessions immediately, not at token expiry.
+    if (!user.isActive) user.refreshTokens = [];
+    await user.save();
+
+    const summary = await buildCustomerSummary();
+
+    return ok(
+        res,
+        { user, summary },
+        user.isActive ? "Customer unblocked." : "Customer blocked.",
+    );
+});

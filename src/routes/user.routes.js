@@ -1,51 +1,34 @@
 import express from "express";
-import rateLimit from "express-rate-limit";
-import { signup, login, logout, getMe, sendOtp, verifySignupOtp } from "../controllers/userController.js";
-import { isAuthenticated, requireActiveAccount } from "../middlewares/user.middleware.js";
- 
+import {
+    getProfile,
+    updateProfile,
+    listAddresses,
+    addAddress,
+    updateAddress,
+    deleteAddress,
+    setDefaultAddress,
+    listUsers,
+    listCustomers,
+    setUserStatus,
+} from "../controllers/userController.js";
+import { requireAuth, requireRole } from "../middlewares/auth.middleware.js";
+
 const router = express.Router();
- 
-// Prevents SMS-cost abuse: max 3 OTP requests per phone/IP window per 10 min
-const otpRequestLimiter = rateLimit({
-    windowMs: 10 * 60 * 1000,
-    max: 3,
-    message: {
-        success: false,
-        message: "Too many OTP requests. Please try again in 10 minutes."
-    },
-    standardHeaders: true,
-    legacyHeaders: false
-});
- 
-// Prevents brute-forcing the 6-digit code: max 5 attempts per 10 min
-const otpVerifyLimiter = rateLimit({
-    windowMs: 10 * 60 * 1000,
-    max: 5,
-    message: {
-        success: false,
-        message: "Too many verification attempts. Please try again in 10 minutes."
-    },
-    standardHeaders: true,
-    legacyHeaders: false
-});
- 
-// Signup — creates account, issues session, sends verification OTP
-router.post("/signup", signup);
-router.post("/verify-signup-otp", otpVerifyLimiter, verifySignupOtp);
- 
-// Login (returning users) — phone + password OR phone + OTP
-router.post("/login", login);
-router.post("/logout", logout);
- 
-// Request an OTP — used both to resend signup verification and for OTP login
-router.post("/send-otp", otpRequestLimiter, sendOtp);
- 
-// Protected routes — blocked until phone is verified via OTP.
-// isAuthenticated confirms the token is valid; requireActiveAccount
-// then confirms isActive: true before allowing access.
-router.get("/me", isAuthenticated, requireActiveAccount, getMe);
- 
-// Any other app route you add later should follow the same pattern:
-// router.get("/some-protected-thing", isAuthenticated, requireActiveAccount, someController);
- 
+
+router.use(requireAuth);
+
+router.get("/profile", getProfile);
+router.patch("/profile", updateProfile);
+
+router.get("/addresses", listAddresses);
+router.post("/addresses", addAddress);
+router.patch("/addresses/:addressId", updateAddress);
+router.delete("/addresses/:addressId", deleteAddress);
+router.patch("/addresses/:addressId/default", setDefaultAddress);
+
+// Admin
+router.get("/admin/customers", requireRole("admin"), listCustomers);
+router.get("/", requireRole("admin"), listUsers);
+router.patch("/:id/status", requireRole("admin"), setUserStatus);
+
 export default router;
