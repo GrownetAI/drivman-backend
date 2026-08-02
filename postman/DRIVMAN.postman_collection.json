@@ -1,0 +1,4840 @@
+{
+	"info": {
+		"_postman_id": "drivman-backend-collection-0001",
+		"name": "DRIVMAN Backend API",
+		"description": "Complete API collection for the DRIVMAN backend.\n\n## How to use\n1. Import BOTH this collection and `DRIVMAN.postman_environment.json`.\n2. Select the **DRIVMAN Local** environment (top-right dropdown).\n3. Run the folders **in order**: 01 Health -> 02 Auth -> 03 Catalog -> 04 Wishlist -> 05 Cart -> 06 Addresses -> 07 Orders -> 08 Admin.\n\nTokens, product ids and order ids are captured automatically into environment variables by each request's Tests script, so you never need to copy/paste an id.\n\n## Notes\n- Signup does NOT return a token. You must verify the email first.\n- In development the verification/reset tokens are returned in the response body as `devVerificationToken` / `devResetToken` so you can test without opening a mailbox.\n- With Twilio unset, OTP login uses the dev code `123456`.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "01 · Health",
+			"item": [
+				{
+					"name": "Health check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Confirms the server is running. Run this first — if it fails, nothing else will work."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"API is up\", () => pm.response.to.have.status(200));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "02 · Auth",
+			"description": "Full authentication flow. Run top-to-bottom the first time.",
+			"item": [
+				{
+					"name": "1. Signup",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/signup",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"signup"
+							]
+						},
+						"description": "Creates an UNVERIFIED account and emails a 6-digit verification code.\n\nReturns NO token — you cannot log in until the email is verified.\nIn development the code is echoed back as `devOtpCode` and captured automatically.\n\nIf the code cannot be sent, the account is deleted so the address isn't locked up.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"Test User\",\n  \"email\": \"{{userEmail}}\",\n  \"phone\": \"{{userPhone}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+									"const d = pm.response.json().data;",
+									"pm.test(\"No token issued at signup\", () => pm.expect(d.accessToken).to.be.undefined);",
+									"pm.test(\"Code expiry is reported\", () => pm.expect(d.expiresInMinutes).to.eql(10));",
+									"if (d.devOtpCode) {",
+									"  pm.environment.set(\"emailOtp\", d.devOtpCode);",
+									"  console.log(\"Captured emailOtp:\", d.devOtpCode);",
+									"} else {",
+									"  console.warn(\"No devOtpCode — is NODE_ENV=production? Read the code from the inbox.\");",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2. Login BEFORE verification (expect 403)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Proves the verification gate works. This SHOULD fail with 403.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Blocked until email verified\", () => pm.response.to.have.status(403));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "3. Resend verification code",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/resend-verification",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"resend-verification"
+							]
+						},
+						"description": "Alias of POST /api/auth/email/send-otp — kept so existing clients keep working.\n\nAlways returns the same generic message so it can't be used to discover which emails are registered.\n\nPer-email limits: 1 per 60s, 5 per hour. Also IP-limited to 10/hour.\nExpect 429 if you run this right after signup — that is the cooldown working.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 200 or 429 (cooldown)\", () => pm.expect(pm.response.code).to.be.oneOf([200, 429]));",
+									"if (pm.response.code === 429) {",
+									"  console.log(\"Cooldown active — expected within 60s of the last request.\");",
+									"} else {",
+									"  const d = pm.response.json().data;",
+									"  if (d && d.devOtpCode) pm.environment.set(\"emailOtp\", d.devOtpCode);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4. Verify email (OTP)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/email/verify-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"email",
+								"verify-otp"
+							]
+						},
+						"description": "Confirms the address with the 6-digit code and logs you straight in — returns both tokens.\n\nThe code is single-use, expires in 10 minutes, and dies after 5 wrong guesses.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"code\": \"{{emailOtp}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);",
+									"pm.test(\"Email is verified\", () => pm.expect(d.user.isEmailVerified).to.be.true);",
+									"pm.test(\"Verification timestamp is recorded\", () => pm.expect(d.user.emailVerifiedAt).to.be.a(\"string\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5a. Login — email + password",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5b. Login — phone + password",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"phone\": \"{{userPhone}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5c-i. Request OTP",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/request-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"request-otp"
+							]
+						},
+						"description": "Sends a login OTP by SMS.\n\nWith Twilio unconfigured the server runs in DEV mode: the code is always `123456` and is printed to the server console.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"phone\": \"{{userPhone}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "5c-ii. Login — phone + OTP",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Third login method. Use the code from the previous request (dev default: 123456).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"phone\": \"{{userPhone}}\",\n  \"otp\": \"{{devOtp}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "6. Get current user (/me)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/me",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"me"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"Password never exposed\", () => pm.expect(pm.response.json().data.user.password).to.be.undefined);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "7. Refresh access token",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/refresh",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"refresh"
+							]
+						},
+						"description": "Exchanges a refresh token for a new access token.\n\nThe refresh token is ROTATED — the old one stops working immediately. Always save the new one.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "8. Change password",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/change-password",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"change-password"
+							]
+						},
+						"description": "Keeps THIS device logged in and revokes every other session.\n\nAfter running this, update the `userPassword` environment variable to `NewPassw0rd1`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"currentPassword\": \"{{userPassword}}\",\n  \"newPassword\": \"NewPassw0rd1\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);",
+									"pm.environment.set(\"userPassword\", \"NewPassw0rd1\");"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "9. Forgot password",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/forgot-password",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"forgot-password"
+							]
+						},
+						"description": "Emails a reset link valid for 15 minutes. Generic response regardless of whether the email exists.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"if (d && d.devResetToken) {",
+									"  pm.environment.set(\"resetToken\", d.devResetToken);",
+									"  console.log(\"Captured resetToken\");",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "10. Reset password",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/reset-password",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"reset-password"
+							]
+						},
+						"description": "Sets a new password and revokes ALL sessions on every device.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "11. Send phone OTP (logged in)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/send-phone-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"send-phone-otp"
+							]
+						},
+						"description": "Sends an OTP to the logged-in user's registered number, to mark the phone as verified."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "12. Verify phone",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/verify-phone",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"verify-phone"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"otp\": \"{{devOtp}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "03 · Catalog (Categories & Products)",
+			"description": "Public browsing endpoints — no authentication required.",
+			"item": [
+				{
+					"name": "List categories",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories"
+							]
+						},
+						"description": "All 10 car makes: Maruti Suzuki, Hyundai, Kia, Tata, Mahindra, Toyota, Honda, Volkswagen, Skoda, MG."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const c = pm.response.json().data.categories;",
+									"pm.test(\"Categories returned\", () => pm.expect(c.length).to.be.above(0));",
+									"pm.environment.set(\"categoryId\", c[0]._id);",
+									"pm.environment.set(\"categorySlug\", c[0].slug);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List categories (tree)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories?tree=true",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories"
+							],
+							"query": [
+								{
+									"key": "tree",
+									"value": "true"
+								}
+							]
+						},
+						"description": "Nested form — root categories with their children populated."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get category by slug",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories/{{categorySlug}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories",
+								"{{categorySlug}}"
+							]
+						},
+						"description": "Also works with an id. Includes a live `productCount`."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get products in a category",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories/{{categorySlug}}/products?page=1&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories",
+								"{{categorySlug}}",
+								"products"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List products",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?page=1&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Paginated. Response includes `meta` with page/limit/total/totalPages."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const p = pm.response.json().data.products;",
+									"pm.test(\"Products returned\", () => pm.expect(p.length).to.be.above(0));",
+									"pm.environment.set(\"productId\", p[0]._id);",
+									"pm.environment.set(\"productSlug\", p[0].slug);",
+									"if (p[1]) pm.environment.set(\"productId2\", p[1]._id);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Search products",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?search=thar",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "thar"
+								}
+							]
+						},
+						"description": "Partial, case-insensitive match across name, brand, vehicleModel and description."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Filter — by category",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?category=toyota",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "toyota"
+								}
+							]
+						},
+						"description": "Accepts a category slug or id. Includes child categories automatically."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Filter — by brand",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?brand=Mahindra",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "brand",
+									"value": "Mahindra"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Filter — price range",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?minPrice=5000&maxPrice=8500",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "minPrice",
+									"value": "5000"
+								},
+								{
+									"key": "maxPrice",
+									"value": "8500"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Filter — pieces & rows",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?pieces=5&rows=4",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "pieces",
+									"value": "5"
+								},
+								{
+									"key": "rows",
+									"value": "4"
+								}
+							]
+						},
+						"description": "pieces = SET OF PCS from your price list. rows = seating rows (3-row / 4-row with dicky)."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Sort products",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products?sort=price_desc",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							],
+							"query": [
+								{
+									"key": "sort",
+									"value": "price_desc"
+								}
+							]
+						},
+						"description": "Options: newest, oldest, price_asc, price_desc, name_asc, name_desc, rating."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List all brands",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/brands",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"brands"
+							]
+						},
+						"description": "Distinct brand list — useful for building filter dropdowns."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Featured products",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/featured?limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"featured"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get product by id",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/{{productId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"{{productId}}"
+							]
+						},
+						"description": "Returns the product plus up to 8 `related` products from the same category."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get product by slug",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/{{productSlug}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"{{productSlug}}"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "04 · Wishlist",
+			"description": "Requires a logged-in, email-verified user.",
+			"item": [
+				{
+					"name": "Get wishlist",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/wishlist",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"wishlist"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Add to wishlist",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/wishlist",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"wishlist"
+							]
+						},
+						"description": "Idempotent — adding the same product twice returns `alreadyPresent: true` rather than erroring.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"productId\": \"{{productId}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Move item to cart",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/wishlist/{{productId}}/move-to-cart",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"wishlist",
+								"{{productId}}",
+								"move-to-cart"
+							]
+						},
+						"description": "Adds to the cart and removes from the wishlist in one call.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"quantity\": 1\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Remove from wishlist",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/wishlist/{{productId2}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"wishlist",
+								"{{productId2}}"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 404\", () => pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Clear wishlist",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/wishlist",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"wishlist"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "05 · Cart",
+			"description": "Requires a logged-in, email-verified user.\n\nPrices are always read live from the product — the cart never stores a price.",
+			"item": [
+				{
+					"name": "Get cart",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart"
+							]
+						},
+						"description": "Returns items with live prices, per-line subtotals and a summary block."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Add item to cart",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart/items",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart",
+								"items"
+							]
+						},
+						"description": "Adding a product already in the cart INCREMENTS its quantity. Max 10 per product, capped by stock.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"productId\": \"{{productId}}\",\n  \"quantity\": 2\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update item quantity",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart/items/{{productId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart",
+								"items",
+								"{{productId}}"
+							]
+						},
+						"description": "Sets an ABSOLUTE quantity (not a delta). Sending 0 removes the line.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"quantity\": 3\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Remove item",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart/items/{{productId2}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart",
+								"items",
+								"{{productId2}}"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 404\", () => pm.expect(pm.response.code).to.be.oneOf([200,404]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Clear cart",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "06 · Profile & Addresses",
+			"item": [
+				{
+					"name": "Get profile",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/profile",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"profile"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update profile",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/profile",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"profile"
+							]
+						},
+						"description": "Changing the phone number resets `isPhoneVerified` to false.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"Updated Name\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List addresses",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/addresses",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"addresses"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Add address",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/addresses",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"addresses"
+							]
+						},
+						"description": "The first address saved automatically becomes the default.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"label\": \"Home\",\n  \"fullName\": \"Test User\",\n  \"phone\": \"{{userPhone}}\",\n  \"line1\": \"12 MG Road\",\n  \"line2\": \"Near Metro Station\",\n  \"city\": \"Bengaluru\",\n  \"state\": \"Karnataka\",\n  \"postalCode\": \"560001\",\n  \"country\": \"India\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.environment.set(\"addressId\", pm.response.json().data.address._id);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update address",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/addresses/{{addressId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"addresses",
+								"{{addressId}}"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"city\": \"Mumbai\",\n  \"state\": \"Maharashtra\",\n  \"postalCode\": \"400001\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Set default address",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/addresses/{{addressId}}/default",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"addresses",
+								"{{addressId}}",
+								"default"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delete address",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/addresses/{{addressId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"addresses",
+								"{{addressId}}"
+							]
+						},
+						"description": "Deleting the default promotes the next address automatically.\n\nNote: this clears `addressId`; folder 07 creates a fresh address of its own."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 404\", () => pm.expect(pm.response.code).to.be.oneOf([200,404]));",
+									"pm.environment.unset(\"addressId\");"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "07 · Orders",
+			"description": "Checkout flow.\n\nThe first two requests set up an address and a cart item, so this folder runs standalone.",
+			"item": [
+				{
+					"name": "0. Setup — add address & cart item",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/addresses",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"addresses"
+							]
+						},
+						"description": "Guarantees a valid address exists for the orders below, regardless of what folder 06 left behind.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"label\": \"Checkout Address\",\n  \"fullName\": \"Test User\",\n  \"phone\": \"{{userPhone}}\",\n  \"line1\": \"12 MG Road\",\n  \"city\": \"Bengaluru\",\n  \"state\": \"Karnataka\",\n  \"postalCode\": \"560001\",\n  \"country\": \"India\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.environment.set(\"addressId\", pm.response.json().data.address._id);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "0b. Setup — add item to cart",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart/items",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart",
+								"items"
+							]
+						},
+						"description": "Guarantees the cart is non-empty before checkout.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"productId\": \"{{productId}}\",\n  \"quantity\": 2\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create order — COD",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders"
+							]
+						},
+						"description": "Sources line items from your cart, reserves stock atomically, and clears the cart.\n\nCOD orders are `confirmed` immediately.\n\nYou can pass a full `shippingAddress` object instead of `addressId`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"paymentMethod\": \"COD\",\n  \"addressId\": \"{{addressId}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const o = pm.response.json().data.order;",
+									"pm.environment.set(\"orderId\", o._id);",
+									"pm.test(\"Order number assigned\", () => pm.expect(o.orderNumber).to.match(/^DRV-/));",
+									"pm.test(\"Totals add up\", () => pm.expect(o.grandTotal).to.eql(o.itemsTotal + o.shippingFee - o.discount));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create order — COD with inline address",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders"
+							]
+						},
+						"description": "Guest-style checkout — no saved address needed.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"paymentMethod\": \"COD\",\n  \"shippingAddress\": {\n    \"fullName\": \"Test User\",\n    \"phone\": \"{{userPhone}}\",\n    \"line1\": \"12 MG Road\",\n    \"city\": \"Bengaluru\",\n    \"state\": \"Karnataka\",\n    \"postalCode\": \"560001\",\n    \"country\": \"India\"\n  }\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"201 or 400 (empty cart)\", () => pm.expect(pm.response.code).to.be.oneOf([201,400]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create order — Buy Now (skip cart)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders"
+							]
+						},
+						"description": "Passing `items` bypasses the cart entirely and leaves it untouched.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"paymentMethod\": \"COD\",\n  \"addressId\": \"{{addressId}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"201 or 400\", () => pm.expect(pm.response.code).to.be.oneOf([201,400]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create order — Razorpay",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders"
+							]
+						},
+						"description": "Creates a pending order plus a Razorpay order.\n\nThe response `payment` block gives you `razorpayOrderId`, `amount`, `currency` and `keyId` to hand to the Razorpay checkout widget.\n\nReturns 400 if RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"paymentMethod\": \"RAZORPAY\",\n  \"addressId\": \"{{addressId}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"201 or 400 (razorpay unconfigured)\", () => pm.expect(pm.response.code).to.be.oneOf([201,400]));",
+									"if (pm.response.code === 201) {",
+									"  const d = pm.response.json().data;",
+									"  pm.environment.set(\"razorpayOrderId\", d.order._id);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify Razorpay payment",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/{{razorpayOrderId}}/verify-payment",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders",
+								"{{razorpayOrderId}}",
+								"verify-payment"
+							]
+						},
+						"description": "Call this after the Razorpay widget succeeds.\n\nPaste the `razorpay_payment_id` and `razorpay_signature` the widget returns. The server verifies the HMAC before marking the order paid — a forged signature is rejected.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"razorpayPaymentId\": \"pay_XXXXXXXXXXXXXX\",\n  \"razorpaySignature\": \"SIGNATURE_FROM_RAZORPAY_CHECKOUT\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Responds\", () => pm.expect(pm.response.code).to.be.oneOf([200,400,404]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List my orders",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders?page=1&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List my orders — filter by status",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders?status=confirmed",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "confirmed"
+								}
+							]
+						},
+						"description": "Takes a UI bucket (placed, shipped, out_for_delivery, delivered, cancelled) or a raw status (pending, confirmed, processing, shipped, out_for_delivery, delivered, cancelled)."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get order by id",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/{{orderId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders",
+								"{{orderId}}"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cancel order",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/{{orderId}}/cancel",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders",
+								"{{orderId}}",
+								"cancel"
+							]
+						},
+						"description": "Allowed only before dispatch. Restores stock automatically. Paid orders move to `refunded`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Ordered the wrong model\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 400\", () => pm.expect(pm.response.code).to.be.oneOf([200,400]));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "08 · Admin",
+			"description": "Requires an account with `role: \"admin\"`.\n\nCreate one with: `npm run seed:fresh` (creates admin@drivman.com / Admin@12345), then run **Admin login** first to populate `adminAccessToken`.",
+			"item": [
+				{
+					"name": "Admin login",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Saves the token into `adminAccessToken` — every request in this folder uses it.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"adminAccessToken\", d.accessToken);",
+									"pm.test(\"Role is admin\", () => pm.expect(d.user.role).to.eql(\"admin\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create category",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories"
+							]
+						},
+						"description": "The slug is generated from the name automatically.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Renault\",\n  \"description\": \"Dashboard covers for Renault vehicles\",\n  \"sortOrder\": 11\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.environment.set(\"newCategoryId\", pm.response.json().data.category._id);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update category",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories/{{newCategoryId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories",
+								"{{newCategoryId}}"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"description\": \"Updated description\",\n  \"isActive\": true\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delete category",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories/{{newCategoryId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories",
+								"{{newCategoryId}}"
+							]
+						},
+						"description": "Refuses to delete while products or subcategories still reference it."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 400\", () => pm.expect(pm.response.code).to.be.oneOf([200,400]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create product",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Renault Kiger Dashboard Cover\",\n  \"description\": \"Custom-fit dashboard cover for the Renault Kiger.\",\n  \"brand\": \"Renault\",\n  \"category\": \"{{categoryId}}\",\n  \"price\": 4500,\n  \"compareAtPrice\": 5500,\n  \"stock\": 25,\n  \"sku\": \"DRV-RENAULT-KIGER\",\n  \"vehicleModel\": \"KIGER\",\n  \"colour\": \"Dashboard Black\",\n  \"pieces\": 3,\n  \"rows\": null,\n  \"hasDicky\": false,\n  \"isFeatured\": true,\n  \"images\": [\n    {\n      \"url\": \"https://example.com/kiger.jpg\",\n      \"alt\": \"Kiger dashboard cover\"\n    }\n  ]\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.environment.set(\"newProductId\", pm.response.json().data.product._id);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update product",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/{{newProductId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"{{newProductId}}"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"price\": 4200,\n  \"stock\": 40,\n  \"isFeatured\": false\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delete product (soft)",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/{{newProductId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"{{newProductId}}"
+							]
+						},
+						"description": "Sets isActive=false so existing orders keep resolving. Add `?hard=true` to remove permanently."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Product options (form dropdowns)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/options",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"options"
+							]
+						},
+						"description": "Categories, brands, colours, vehicleTypes, badges, sort keys and upload limits — populate the Add/Edit Product form from this instead of hardcoding values."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"has vehicleTypes\", () => pm.expect(pm.response.json().data.vehicleTypes).to.be.an(\"array\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Products list (admin table)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/admin?page=1&limit=8&sort=newest",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"admin"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "8"
+								},
+								{
+									"key": "sort",
+									"value": "newest"
+								}
+							]
+						},
+						"description": "Management list. Includes hidden products, and returns a catalog-wide `summary` for the header count and filter chips."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"has meta + summary\", () => { const d = pm.response.json().data; pm.expect(d.meta.page).to.eql(1); pm.expect(d.summary.total).to.be.a(\"number\"); });"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Products list — search by name or SKU",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/admin?search=baleno&limit=8",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"admin"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "baleno"
+								},
+								{
+									"key": "limit",
+									"value": "8"
+								}
+							]
+						},
+						"description": "One `search` box covers product name, SKU, brand and car model."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Products list — filter by category",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/admin?category={{categoryId}}&limit=8",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"admin"
+							],
+							"query": [
+								{
+									"key": "category",
+									"value": "{{categoryId}}"
+								},
+								{
+									"key": "limit",
+									"value": "8"
+								}
+							]
+						},
+						"description": "Accepts a category id or slug; includes the category's direct children."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Products list — filter by stock bucket",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/admin?stock=low&limit=8",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"admin"
+							],
+							"query": [
+								{
+									"key": "stock",
+									"value": "low"
+								},
+								{
+									"key": "limit",
+									"value": "8"
+								}
+							]
+						},
+						"description": "all | in | low | out. Buckets are mutually exclusive: out = 0, low = 1…LOW_STOCK_THRESHOLD, in = above it."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Products list — hidden only",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/admin?status=hidden&limit=8",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"admin"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "hidden"
+								},
+								{
+									"key": "limit",
+									"value": "8"
+								}
+							]
+						},
+						"description": "status = all | visible | hidden."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get product (admin, includes hidden)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/admin/{{newProductId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"admin",
+								"{{newProductId}}"
+							]
+						},
+						"description": "Loads a product for the edit form even when it is hidden — the public endpoint 404s on those."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Upload product images",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/images",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"images"
+							]
+						},
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "images",
+									"type": "file",
+									"src": [],
+									"description": "Up to 6 files, 5MB each (JPEG/PNG/WebP/AVIF). First one becomes the main photo."
+								}
+							]
+						},
+						"description": "Multipart upload to Cloudinary. Returns [{url, publicId, alt}] to put in the product's `images` array. Needs CLOUDINARY_* env vars."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create product (full admin form)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"DRIVMAN Custom-Fit Dashboard Mat \\u2014 Maruti Suzuki Baleno-17\",\n  \"brand\": \"Maruti Suzuki\",\n  \"vehicleModel\": \"BALENO-17\",\n  \"vehicleType\": \"Sedans\",\n  \"category\": \"{{categoryId}}\",\n  \"price\": 4500,\n  \"compareAtPrice\": 5500,\n  \"pieces\": 3,\n  \"colour\": \"Dashboard Black\",\n  \"stock\": 20,\n  \"badge\": \"Best Seller\",\n  \"description\": \"Shown on the product details page.\",\n  \"images\": [\n    {\n      \"url\": \"https://example.com/baleno.jpg\",\n      \"alt\": \"Baleno-17 dashboard mat\"\n    }\n  ],\n  \"isActive\": true\n}"
+						},
+						"description": "Every field in the Add Product form. `sku` is auto-generated from brand + car model when omitted."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.environment.set(\"newProductId\", pm.response.json().data.product._id);",
+									"pm.test(\"SKU generated\", () => pm.expect(pm.response.json().data.product.sku).to.be.a(\"string\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Toggle product visibility",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/products/{{newProductId}}/visibility",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"products",
+								"{{newProductId}}",
+								"visibility"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"isActive\": false\n}"
+						},
+						"description": "Backs the VISIBLE / HIDDEN switch. Send an empty body to flip the current value."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List all orders",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/admin/all?page=1&limit=20&status=all&search=&sort=newest",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders",
+								"admin",
+								"all"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								},
+								{
+									"key": "status",
+									"value": "all",
+									"description": "all | placed | shipped | out_for_delivery | delivered | cancelled"
+								},
+								{
+									"key": "search",
+									"value": "",
+									"description": "Order number, order id, customer or recipient name/email/phone"
+								},
+								{
+									"key": "sort",
+									"value": "newest",
+									"description": "newest | oldest | total_high | total_low"
+								},
+								{
+									"key": "paymentStatus",
+									"value": "",
+									"description": "pending | paid | failed | refunded",
+									"disabled": true
+								},
+								{
+									"key": "paymentMethod",
+									"value": "",
+									"description": "COD | RAZORPAY",
+									"disabled": true
+								},
+								{
+									"key": "from",
+									"value": "",
+									"description": "YYYY-MM-DD",
+									"disabled": true
+								},
+								{
+									"key": "to",
+									"value": "",
+									"description": "YYYY-MM-DD (inclusive)",
+									"disabled": true
+								},
+								{
+									"key": "userId",
+									"value": "",
+									"disabled": true
+								}
+							]
+						},
+						"description": "The admin order table. Returns `orders`, `meta` and `summary.statuses` — the per-bucket counts that drive the status dropdown."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"summary drives the status dropdown\", () => {",
+									"  const statuses = pm.response.json().data.summary.statuses;",
+									"  pm.expect(statuses.map(s => s.value)).to.eql([",
+									"    'all','placed','shipped','out_for_delivery','delivered','cancelled'",
+									"  ]);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Order stats",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/admin/stats",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders",
+								"admin",
+								"stats"
+							]
+						},
+						"description": "Status counts plus bookedRevenue, collectedRevenue and awaitingPayment. Accepts the same filters as /admin/all."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update order status",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/{{orderId}}/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"orders",
+								"{{orderId}}",
+								"status"
+							]
+						},
+						"description": "Forward-only state machine:\npending -> confirmed -> processing -> shipped -> out_for_delivery -> delivered\n\n`shipped` may go straight to `delivered` when the courier reports no out-for-delivery scan. Any state up to `processing` can also go to `cancelled` (which restores stock). Marking a COD order `delivered` also marks it paid.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"status\": \"processing\",\n  \"note\": \"Packed and ready for pickup\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 400\", () => pm.expect(pm.response.code).to.be.oneOf([200,400]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List customers (admin table)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/admin/customers?page=1&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"admin",
+								"customers"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Customers table: role=user only, each row carries ordersCount/totalSpent. Optional filters: status (all|active|blocked), search (name/email/phone), sort (newest|oldest|name_asc|name_desc). Response includes summary with header-tile counts."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"summary has status tiles\", () => {",
+									"    const body = pm.response.json().data;",
+									"    pm.expect(body.summary).to.have.property(\"total\");",
+									"    pm.expect(body.summary).to.have.property(\"active\");",
+									"    pm.expect(body.summary).to.have.property(\"blocked\");",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List users",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users?page=1&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Optional filters: role, search (matches name/email/phone)."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Block / unblock customer",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/users/{{targetUserId}}/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"{{targetUserId}}",
+								"status"
+							]
+						},
+						"description": "Body may be {isActive}, {blocked}, or {} to flip the current state (what the table's block icon sends). Blocking revokes sessions immediately. Response includes the refreshed summary tiles.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"isActive\": false\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Responds\", () => pm.expect(pm.response.code).to.be.oneOf([200,400,404]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create coupon — percentage",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							]
+						},
+						"description": "Codes are uppercased automatically. Omit `usageLimit` / `expiresAt` for unlimited / never-expires.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"DRIVE10\",\n  \"discountType\": \"percentage\",\n  \"discountValue\": 10,\n  \"minOrderAmount\": 0,\n  \"usageLimit\": 500,\n  \"expiresAt\": \"2026-12-31\",\n  \"isActive\": true\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.environment.set(\"couponId\", pm.response.json().data.coupon._id);",
+									"pm.environment.set(\"couponCode\", pm.response.json().data.coupon.code);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create coupon — flat amount",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"WELCOME500\",\n  \"discountType\": \"flat\",\n  \"discountValue\": 500,\n  \"minOrderAmount\": 3000,\n  \"usageLimit\": 1000,\n  \"expiresAt\": \"2026-12-31\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"201 or 409 (already exists)\", () => pm.expect(pm.response.code).to.be.oneOf([201,409]));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create coupon — duplicate code (expect 409)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"DRIVE10\",\n  \"discountType\": \"percentage\",\n  \"discountValue\": 25\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 409\", () => pm.response.to.have.status(409));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create coupon — percentage over 100 (expect 400)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"TOOMUCH\",\n  \"discountType\": \"percentage\",\n  \"discountValue\": 150\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 400\", () => pm.response.to.have.status(400));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List coupons",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons?page=1&limit=20&sort=newest",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								},
+								{
+									"key": "sort",
+									"value": "newest"
+								}
+							]
+						},
+						"description": "Every row carries a derived `status`, `remainingUses` and `isExpired` for the admin table."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"Has meta\", () => pm.expect(pm.response.json().data.meta).to.have.property(\"total\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List coupons — search by code",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons?search=drive",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "drive"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List coupons — only active",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons?status=active",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "active"
+								}
+							]
+						},
+						"description": "`status` ∈ active | inactive | expired | exhausted | all"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List coupons — expired",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons?status=expired",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "expired"
+								}
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get coupon by id",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons/{{couponId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons",
+								"{{couponId}}"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get coupon by code",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons/{{couponCode}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons",
+								"{{couponCode}}"
+							]
+						},
+						"description": "The same endpoint accepts an id or the code itself."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update coupon",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons/{{couponId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons",
+								"{{couponId}}"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"discountValue\": 15,\n  \"minOrderAmount\": 1500,\n  \"usageLimit\": 750\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Toggle coupon active",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons/{{couponId}}/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons",
+								"{{couponId}}",
+								"status"
+							]
+						},
+						"description": "Backs the toggle switch in the coupons table.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"isActive\": false\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"pm.test(\"Now inactive\", () => pm.expect(pm.response.json().data.coupon.isActive).to.be.false);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Toggle coupon active — back on",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons/{{couponId}}/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons",
+								"{{couponId}}",
+								"status"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"isActive\": true\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Coupons require admin (expect 403)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons"
+							]
+						},
+						"description": "Uses the normal user's token — the whole /api/coupons router is admin-only."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delete coupon",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{adminAccessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/coupons/{{couponId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"coupons",
+								"{{couponId}}"
+							]
+						},
+						"description": "A coupon that has been redeemed is protected — pass `?force=true` to delete it anyway."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 400\", () => pm.expect(pm.response.code).to.be.oneOf([200,400]));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "09 · Security & Validation checks",
+			"description": "These SHOULD fail — they prove the guards work.",
+			"item": [
+				{
+					"name": "0. Re-login as normal user (setup)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Ensures the checks below run as a NORMAL user, not an admin.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);",
+									"const d = pm.response.json().data;",
+									"pm.environment.set(\"accessToken\", d.accessToken);",
+									"pm.environment.set(\"refreshToken\", d.refreshToken);",
+									"pm.test(\"Not an admin\", () => pm.expect(d.user.role).to.eql(\"user\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Protected route with NO credentials -> 401",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/me",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"me"
+							]
+						},
+						"description": "Sends neither an Authorization header nor an auth cookie.\n\nNote: the API accepts EITHER a Bearer token or the httpOnly cookie. Postman keeps cookies from earlier logins, so this request clears them in a pre-request script — otherwise the cookie would legitimately authenticate it.",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Clear auth cookies so this request truly carries no credentials.",
+									"const jar = pm.cookies.jar();",
+									"jar.clear(pm.environment.get('baseUrl'), () => {});"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"401 with no credentials\", () => pm.response.to.have.status(401));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Admin route as normal user -> 403",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/categories",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"categories"
+							]
+						},
+						"description": "Uses the normal-user token captured above. MUST be 403.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Should Fail\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"403\", () => pm.response.to.have.status(403));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Signup with weak password -> 400",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/signup",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"signup"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"X\",\n  \"email\": \"weak@test.com\",\n  \"phone\": \"+919000000001\",\n  \"password\": \"abc\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"400\", () => pm.response.to.have.status(400));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Signup with bad phone format -> 400",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/signup",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"signup"
+							]
+						},
+						"description": "Phone must be E.164: +91XXXXXXXXXX",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"X\",\n  \"email\": \"bad@test.com\",\n  \"phone\": \"9876543210\",\n  \"password\": \"Passw0rd1\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"400\", () => pm.response.to.have.status(400));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Duplicate email signup -> 400",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/signup",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"signup"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"Dup\",\n  \"email\": \"{{userEmail}}\",\n  \"phone\": \"+919000000002\",\n  \"password\": \"Passw0rd1\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"400\", () => pm.response.to.have.status(400));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Login with wrong password -> 401",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "5 consecutive failures lock the account for 15 minutes.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"TotallyWrong123\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"401\", () => pm.response.to.have.status(401));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Invalid ObjectId -> 400",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/cart/items",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"cart",
+								"items"
+							]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"productId\": \"not-a-valid-id\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"400\", () => pm.response.to.have.status(400));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Unknown route -> 404",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/does-not-exist",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"does-not-exist"
+							]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"404\", () => pm.response.to.have.status(404));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "10 · Logout (run last)",
+			"description": "Kept in its own folder at the end — running these mid-collection would revoke the token every later request needs.",
+			"item": [
+				{
+					"name": "Logout (this device)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/logout",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"logout"
+							]
+						},
+						"description": "Revokes this device's refresh token and clears the auth cookies.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status is 2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200,201]));",
+									"pm.test(\"success = true\", () => pm.expect(pm.response.json().success).to.be.true);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Refresh after logout -> 401",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/refresh",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"refresh"
+							]
+						},
+						"description": "Proves the refresh token was really revoked.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"401\", () => pm.response.to.have.status(401));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Logout all devices",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/logout-all",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"logout-all"
+							]
+						},
+						"description": "Log in again first if you want to test this — the previous request already ended the session."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"200 or 401\", () => pm.expect(pm.response.code).to.be.oneOf([200,401]));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "11 · Email OTP (verification codes)",
+			"description": "Exercises the email verification code flow on its own, including the abuse protections.\n\nRun AFTER folder 02 (needs a signed-up account). These use a throwaway address\nso they do not disturb the main test user's state.",
+			"item": [
+				{
+					"name": "1. Send OTP — unknown address (generic 200)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/email/send-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"email",
+								"send-otp"
+							]
+						},
+						"description": "An address with no account returns exactly the same body as a registered one, and no email is sent. This is what stops the endpoint being used to discover who is registered.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{throwawayEmail}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+									"const b = pm.response.json();",
+									"pm.test(\"Generic message\", () => pm.expect(b.message).to.include(\"If that email is registered\"));",
+									"pm.test(\"Expiry reported\", () => pm.expect(b.data.expiresInMinutes).to.eql(10));",
+									"// No devOtpCode: nothing was dispatched, because there is no account.",
+									"pm.test(\"No code issued for an unknown address\", () => pm.expect(b.data.devOtpCode).to.be.undefined);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2. Send OTP again — 60s cooldown (expect 429)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/email/send-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"email",
+								"send-otp"
+							]
+						},
+						"description": "The per-email cooldown is 1 request per 60 seconds, enforced in MongoDB so it survives a restart.\n\nIt applies to unknown addresses too — otherwise the 429 itself would reveal which addresses exist.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{throwawayEmail}}\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status 429\", () => pm.response.to.have.status(429));",
+									"pm.test(\"Says how long to wait\", () => pm.expect(pm.response.json().message).to.match(/wait \\d+ second/i));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "3. Verify with a wrong code (expect 400)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/email/verify-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"email",
+								"verify-otp"
+							]
+						},
+						"description": "Every failure — wrong code, expired code, no code requested, unknown address — returns this one identical message. Distinguishing them would leak which accounts exist.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{throwawayEmail}}\",\n  \"code\": \"000000\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+									"pm.test(\"Generic failure message\", () => pm.expect(pm.response.json().message).to.include(\"invalid or has expired\"));"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4. Burn 4 more guesses, then expect lockout (429)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/auth/email/verify-otp",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"email",
+								"verify-otp"
+							]
+						},
+						"description": "Five wrong guesses kill the code — a fresh request is then required.\n\nThis request loops itself 4 times using postman.setNextRequest, so the 5th attempt (counting the previous request) trips the lockout.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{throwawayEmail}}\",\n  \"code\": \"000000\"\n}"
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Attempt 2..5 of the 5-guess budget; attempt 5 must lock out.",
+									"let n = Number(pm.environment.get(\"otpGuessCount\") || 1);",
+									"n += 1;",
+									"pm.environment.set(\"otpGuessCount\", n);",
+									"",
+									"if (n < 5) {",
+									"  pm.test(\"Attempt \" + n + \" rejected with 400\", () => pm.response.to.have.status(400));",
+									"  postman.setNextRequest(\"4. Burn 4 more guesses, then expect lockout (429)\");",
+									"} else {",
+									"  pm.test(\"5th wrong guess locks the code (429)\", () => pm.response.to.have.status(429));",
+									"  pm.test(\"Tells the user to request a new code\", () => pm.expect(pm.response.json().message).to.match(/request a new code/i));",
+									"  pm.environment.unset(\"otpGuessCount\");",
+									"  postman.setNextRequest(null);",
+									"}"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"variable": []
+}
