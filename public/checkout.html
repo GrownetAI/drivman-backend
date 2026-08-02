@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>DRIVMAN Checkout</title>
+</head>
+<body>
+    <!-- Minimal reference wiring for POST /api/orders -> Razorpay Checkout ->
+         POST /api/orders/:id/verify-payment. The real storefront lives in a
+         separate frontend app; port this snippet there rather than serving
+         checkout from the API itself. -->
+    <button id="pay-btn">Pay with Razorpay</button>
+    <p id="status"></p>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+        const statusEl = document.getElementById("status");
+
+        document.getElementById("pay-btn").addEventListener("click", async () => {
+            statusEl.textContent = "Creating order...";
+
+            const createRes = await fetch("/api/orders", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include", // sends the httpOnly auth cookie
+                body: JSON.stringify({ paymentMethod: "RAZORPAY" }),
+            });
+            const createBody = await createRes.json();
+            if (!createRes.ok) {
+                statusEl.textContent = `Order creation failed: ${createBody.message}`;
+                return;
+            }
+
+            const { order, payment } = createBody.data;
+
+            const rzp = new Razorpay({
+                key: payment.keyId,
+                amount: Math.round(payment.amount * 100),
+                currency: payment.currency,
+                order_id: payment.razorpayOrderId,
+                name: "DRIVMAN",
+                handler: async (response) => {
+                    statusEl.textContent = "Verifying payment...";
+                    const verifyRes = await fetch(`/api/orders/${order._id}/verify-payment`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({
+                            razorpayPaymentId: response.razorpay_payment_id,
+                            razorpaySignature: response.razorpay_signature,
+                        }),
+                    });
+                    const verifyBody = await verifyRes.json();
+                    statusEl.textContent = verifyRes.ok
+                        ? "Payment verified. Order confirmed."
+                        : `Verification failed: ${verifyBody.message}`;
+                },
+                modal: {
+                    ondismiss: () => {
+                        statusEl.textContent = "Payment cancelled.";
+                    },
+                },
+            });
+
+            rzp.open();
+        });
+    </script>
+</body>
+</html>

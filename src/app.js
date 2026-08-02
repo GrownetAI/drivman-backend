@@ -11,6 +11,7 @@ import cartRoutes from "./routes/cart.routes.js";
 import wishlistRoutes from "./routes/wishlist.routes.js";
 import orderRoutes from "./routes/order.routes.js";
 import couponRoutes from "./routes/coupon.routes.js";
+import webhookRoutes from "./routes/webhook.routes.js";
 
 import { notFoundHandler, errorHandler } from "./middlewares/error.middleware.js";
 import { requestId } from "./middlewares/requestId.middleware.js";
@@ -46,9 +47,20 @@ app.use(
     }),
 );
 
-app.use(express.json({ limit: "1mb" }));
+// `verify` stashes the exact raw bytes on req.rawBody — the Razorpay webhook
+// signature is an HMAC over those bytes, and re-serializing req.body would
+// not reliably reproduce them.
+app.use(
+    express.json({
+        limit: "1mb",
+        verify: (req, _res, buf) => {
+            req.rawBody = buf;
+        },
+    }),
+);
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
+app.use(express.static("public"));
 
 // Baseline flood protection. Per-endpoint limits in auth.routes.js are stricter.
 app.use(
@@ -79,6 +91,7 @@ app.use("/api/cart", cartRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/coupons", couponRoutes);
+app.use("/api/webhooks", webhookRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

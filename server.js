@@ -21,6 +21,28 @@ if (process.env.JWT_SECRET.length < 32) {
     console.warn("JWT_SECRET is shorter than 32 characters — use a longer random secret.");
 }
 
+// Razorpay itself stays optional — an unconfigured store just falls back to
+// COD-only checkout (see paymentService.isRazorpayConfigured). But a *partial*
+// config, or online payments with no way to verify webhooks, is always a
+// mistake worth stopping the deploy for rather than surfacing as a runtime 500.
+const razorpayKeyCount = [process.env.RAZORPAY_KEY_ID, process.env.RAZORPAY_KEY_SECRET].filter(
+    Boolean,
+).length;
+
+if (razorpayKeyCount === 1) {
+    console.error(
+        "Razorpay is partially configured — set both RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or neither.",
+    );
+    process.exit(1);
+}
+if (razorpayKeyCount === 2 && !process.env.RAZORPAY_WEBHOOK_SECRET) {
+    console.error(
+        "RAZORPAY_WEBHOOK_SECRET is required when Razorpay is configured — " +
+            "without it, incoming webhooks cannot be verified.",
+    );
+    process.exit(1);
+}
+
 // Signup depends on email, so a missing API key has to stop the deploy rather
 // than surface as a 500 on the first signup of the day.
 try {
