@@ -308,7 +308,11 @@ export const login = asyncHandler(async (req, res) => {
     }
 
     // The gate the old code was missing: unverified accounts cannot get a session.
-    if (!user.isEmailVerified) {
+    // TEMPORARY — remove once real email provider is configured: SKIP_EMAIL_VERIFICATION
+    // lets unverified accounts log in when the OTP email can't actually be delivered
+    // (no RESEND_API_KEY yet). Off by default — must be explicitly "true" to bypass.
+    const skipEmailVerification = process.env.SKIP_EMAIL_VERIFICATION === "true";
+    if (!user.isEmailVerified && !skipEmailVerification) {
         throw forbidden(
             "Please verify your email address before logging in. Use /api/auth/resend-verification to get a new link.",
         );

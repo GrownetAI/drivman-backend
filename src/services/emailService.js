@@ -2,6 +2,8 @@ import { getEmailConfig } from "../config/email.config.js";
 import { logger as rootLogger } from "../utils/logger.js";
 import { resendProvider } from "./email/resend.provider.js";
 import { smtpProvider } from "./email/smtp.provider.js";
+// TEMPORARY — remove once real email provider is configured.
+import { consoleProvider } from "./email/console.provider.js";
 import { EmailDeliveryError } from "./email/deliveryError.js";
 import {
     otpEmail,
@@ -19,7 +21,8 @@ import {
  * Adding a message type later (shipping updates, refunds) means adding one
  * template plus one method here; the interface shape does not change.
  */
-const PROVIDERS = { resend: resendProvider, smtp: smtpProvider };
+// "console" entry is TEMPORARY — remove once real email provider is configured.
+const PROVIDERS = { resend: resendProvider, smtp: smtpProvider, console: consoleProvider };
 
 const MAX_RETRIES = 2; // 3 attempts total
 const BASE_BACKOFF_MS = 300; // 300ms, then 600ms

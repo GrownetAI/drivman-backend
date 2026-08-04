@@ -11,7 +11,10 @@ const read = (key) => {
     return typeof value === "string" ? value.trim() : "";
 };
 
-export const SUPPORTED_PROVIDERS = ["resend", "smtp"];
+// "console" is TEMPORARY — remove once real email provider is configured.
+// It's a dev-only stand-in that logs emails instead of sending them, so boot
+// doesn't crash for lack of RESEND_API_KEY/SMTP credentials.
+export const SUPPORTED_PROVIDERS = ["resend", "smtp", "console"];
 
 export const getEmailConfig = () => ({
     provider: (read("EMAIL_PROVIDER") || "resend").toLowerCase(),

@@ -43,7 +43,11 @@ export const requireAuth = asyncHandler(async (req, _res, next) => {
 
 /** Blocks the request until the user has confirmed their email address. */
 export const requireVerifiedEmail = (req, _res, next) => {
-    if (!req.user?.isEmailVerified) {
+    // TEMPORARY — remove once real email provider is configured: SKIP_EMAIL_VERIFICATION
+    // lets unverified accounts through here too, matching the same bypass in the
+    // login check. Off by default — must be explicitly "true" to relax this gate.
+    const skipEmailVerification = process.env.SKIP_EMAIL_VERIFICATION === "true";
+    if (!req.user?.isEmailVerified && !skipEmailVerification) {
         return next(
             forbidden("Please verify your email address to continue."),
         );
