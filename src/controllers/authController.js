@@ -88,22 +88,11 @@ export const signup = asyncHandler(async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await User.findOne({
-        $or: [{ email: normalizedEmail }, { phone: phone.trim() }],
+         
+            email: normalizedEmail 
     });
 
-    if (existing) {
-        // An unverified account whose link expired is a dead end for the user,
-        // so let them restart signup by replacing it rather than being stuck.
-        if (!existing.isEmailVerified) {
-            await User.deleteOne({ _id: existing._id });
-        } else {
-            throw badRequest(
-                existing.email === normalizedEmail
-                    ? "That email is already registered. Try logging in."
-                    : "That phone number is already registered. Try logging in.",
-            );
-        }
-    }
+    if (existing) throw badRequest("That email is already registered. Try logging in.");
 
     const user = new User({
         fullName: fullName.trim(),
