@@ -28,12 +28,15 @@ const unwrapQuotedPrintable = (body) =>
         .replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 
 /**
- * Pulls the verification code out of the plaintext part, which reads
- * "...your DRIVMAN verification code is 418302."
+ * Pulls the code out of the plaintext part. Covers both wordings the templates
+ * use — "your DRIVMAN verification code is 418302" (signup) and "use code
+ * 064300 to confirm" (email change) — so a new template can't silently stop
+ * printing and leave a stale code on screen.
  *
  * This is why the sink is development-only: it prints a live credential.
  */
-const extractCode = (body) => /verification code is (\d{6})/i.exec(body)?.[1] ?? null;
+const extractCode = (body) =>
+    /(?:code is|use code)\s+(\d{6})/i.exec(body)?.[1] ?? null;
 
 /** Password-reset and verification links, so they can be clicked from the terminal. */
 const extractLink = (body) =>

@@ -51,6 +51,28 @@ export const otpEmail = ({ fullName, code, ttlMinutes }) => ({
     ),
 });
 
+/**
+ * Sent to the address a user is moving TO. Naming the destination in the body
+ * matters: if this lands in the wrong inbox because of a typo, the recipient
+ * should be able to tell immediately that it isn't about their own account.
+ */
+export const emailChangeOtpEmail = ({ fullName, code, ttlMinutes, newEmail }) => ({
+    subject: "Confirm your new DRIVMAN email address",
+    text: `Hi ${fullName || "there"}, use code ${code} to confirm ${newEmail} as your new DRIVMAN email address. It expires in ${ttlMinutes} minutes. If you didn't request this, ignore this email — nothing has changed yet.`,
+    html: layout(
+        "Confirm your new email address",
+        `<p style="font-size:14px;line-height:1.6;margin:0 0 20px">
+         Hi ${escapeHtml(fullName || "there")}, use this code to confirm
+         <strong>${escapeHtml(newEmail)}</strong> as the new email address on your DRIVMAN account.
+       </p>
+       <p style="font-size:34px;font-weight:700;letter-spacing:8px;text-align:center;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f4f4f5;border-radius:8px;padding:18px 12px;margin:0 0 20px">${escapeHtml(code)}</p>
+       <p style="font-size:13px;color:#666;line-height:1.6;margin:0">
+         This code expires in <strong>${escapeHtml(ttlMinutes)} minutes</strong>. Your address will not
+         change until it is entered. If you didn't request this, you can ignore this email.
+       </p>`,
+    ),
+});
+
 export const verificationEmail = ({ fullName, token, ttlMinutes, baseUrl }) => {
     const url = `${linkBase(baseUrl)}/verify-email?token=${encodeURIComponent(token)}`;
     return {

@@ -7,6 +7,7 @@ import { consoleProvider } from "./email/console.provider.js";
 import { EmailDeliveryError } from "./email/deliveryError.js";
 import {
     otpEmail,
+    emailChangeOtpEmail,
     verificationEmail,
     passwordResetEmail,
     orderConfirmationEmail,
@@ -114,6 +115,15 @@ export const createEmailService = ({
                 requestId,
             }),
 
+        /** Confirms ownership of the address a user is moving TO. */
+        sendEmailChangeOtp: ({ to, code, ttlMinutes, fullName, requestId }) =>
+            deliver({
+                to,
+                ...emailChangeOtpEmail({ fullName, code, ttlMinutes, newEmail: to }),
+                kind: "email_change_otp",
+                requestId,
+            }),
+
         sendVerificationEmail: ({ to, fullName, token, ttlMinutes, requestId }) =>
             deliver({
                 to,
@@ -160,6 +170,7 @@ export const emailService = createEmailService();
 // Function exports kept so existing callers (authController, orderController)
 // import exactly what they always did.
 export const sendOtpEmail = (args) => emailService.sendOtpEmail(args);
+export const sendEmailChangeOtp = (args) => emailService.sendEmailChangeOtp(args);
 export const sendVerificationEmail = (args) => emailService.sendVerificationEmail(args);
 export const sendPasswordResetEmail = (args) => emailService.sendPasswordResetEmail(args);
 export const sendOrderConfirmationEmail = (args) => emailService.sendOrderConfirmationEmail(args);

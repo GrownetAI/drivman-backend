@@ -6,14 +6,16 @@ import {
 import { Order } from "../models/order.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ok, created } from "../utils/ApiResponse.js";
-import { badRequest, notFound } from "../utils/ApiError.js";
+import { badRequest, notFound, unauthorized } from "../utils/ApiError.js";
 import {
     requireFields,
     assertObjectId,
+    isValidEmail,
     isValidPhone,
     parsePagination,
     buildMeta,
 } from "../utils/validators.js";
+import { emailOtpService } from "../services/emailOtpService.js";
 
 /** @route GET /api/users/profile */
 export const getProfile = asyncHandler(async (req, res) =>
@@ -45,9 +47,9 @@ export const updateProfile = asyncHandler(async (req, res) => {
         if (!isValidPhone(phone)) {
             throw badRequest("Phone must be in E.164 format, e.g. +919876543210.");
         }
-        if (await User.exists({ phone: phone.trim(), _id: { $ne: user._id } })) {
-            throw badRequest("That phone number is already in use.");
-        }
+        // A number may be shared by several accounts (one household, one phone),
+        // so there is deliberately no uniqueness check here. Email is the
+        // identifying field.
         user.phone = phone.trim();
         // A new number is unproven until an OTP confirms it.
         user.isPhoneVerified = false;
@@ -55,6 +57,62 @@ export const updateProfile = asyncHandler(async (req, res) => {
 
     await user.save();
     return ok(res, { user }, "Profile updated.");
+});
+
+/**
+ * @route POST /api/users/profile/email   Body: { newEmail, currentPassword }
+ * Step 1 of changing the login address: emails a code to the NEW address.
+ * Nothing on the account changes until that code comes back.
+ *
+ * The current password is required because a hijacked session must not be able
+ * to walk away with the account by moving its email somewhere else.
+ */
+export const requestEmailChange = asyncHandler(async (req, res) => {
+    const { newEmail, currentPassword } = req.body;
+    requireFields(req.body, ["newEmail", "currentPassword"]);
+
+    if (!isValidEmail(newEmail)) throw badRequest("Please provide a valid email address.");
+
+    const user = await User.findById(req.user._id).select("+password");
+    if (!(await user.comparePassword(currentPassword))) {
+        throw unauthorized("Your current password is incorrect.");
+    }
+
+    const result = await emailOtpService.requestEmailChange({
+        userId: req.user._id,
+        newEmail,
+        ip: req.ip,
+        requestId: req.id,
+    });
+
+    return ok(
+        res,
+        {
+            pendingEmail: result.pendingEmail,
+            expiresInMinutes: result.ttlMinutes,
+            ...(result.devOtpCode ? { devOtpCode: result.devOtpCode } : {}),
+        },
+        `Enter the code sent to ${result.pendingEmail} to confirm the change.`,
+    );
+});
+
+/**
+ * @route POST /api/users/profile/email/verify   Body: { code }
+ * Step 2: the code proves the new inbox belongs to them, so the address moves
+ * and lands already verified.
+ */
+export const verifyEmailChange = asyncHandler(async (req, res) => {
+    const { code, otp } = req.body;
+    const submitted = code ?? otp;
+    requireFields({ code: submitted }, ["code"]);
+
+    const { user } = await emailOtpService.verifyEmailChange({
+        userId: req.user._id,
+        code: submitted,
+        requestId: req.id,
+    });
+
+    return ok(res, { user }, "Email address updated.");
 });
 
 // --- Addresses ---------------------------------------------------------------

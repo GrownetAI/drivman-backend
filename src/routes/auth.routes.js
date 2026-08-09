@@ -22,7 +22,7 @@ import { requireAuth, optionalAuth } from "../middlewares/auth.middleware.js";
 
 const router = express.Router();
 
-const limiter = (windowMinutes, max, message) =>
+const limiter = (windowMinutes, max, message, options = {}) =>
     rateLimit({
         windowMs: windowMinutes * 60 * 1000,
         max,
@@ -33,6 +33,7 @@ const limiter = (windowMinutes, max, message) =>
         // to IP. Keying on IP alone lets an attacker rotate IPs to bypass it.
         keyGenerator: (req) =>
             req.body?.email?.toLowerCase() || req.body?.phone || req.ip,
+        ...options,
     });
 
 /**
@@ -50,7 +51,15 @@ const ipLimiter = (windowMinutes, max, message) =>
         legacyHeaders: false,
     });
 
-const loginLimiter = limiter(15, 10, "Too many login attempts. Please try again in 15 minutes.");
+// Only FAILED logins count. Counting successful ones too meant a user (or a
+// test run) could be locked out while typing the correct password every time,
+// which throttles nothing an attacker does.
+const loginLimiter = limiter(
+    15,
+    10,
+    "Too many failed login attempts. Please try again in 15 minutes.",
+    { skipSuccessfulRequests: true },
+);
 const otpLimiter = limiter(10, 3, "Too many OTP requests. Please try again in 10 minutes.");
 const emailLimiter = limiter(15, 3, "Too many email requests. Please try again in 15 minutes.");
 const signupLimiter = limiter(60, 5, "Too many signup attempts. Please try again later.");

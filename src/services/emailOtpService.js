@@ -14,6 +14,9 @@ export const MAX_VERIFY_ATTEMPTS = 5;
 // Rows outlive the code so the hourly counter has something to count.
 const RETENTION_MINUTES = 60;
 
+export const PURPOSE_VERIFICATION = "email_verification";
+export const PURPOSE_EMAIL_CHANGE = "email_change";
+
 const COOLDOWN_MS = RESEND_COOLDOWN_SECONDS * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -66,10 +69,24 @@ const timingSafeEqual = (a, b) => {
 
 const defaultUsers = {
     findByEmail: (email) => User.findOne({ email }),
+    findById: (id) => User.findById(id),
+    emailTaken: (email, exceptUserId) =>
+        User.exists({ email, ...(exceptUserId ? { _id: { $ne: exceptUserId } } : {}) }),
     markVerified: (email, at) =>
         User.findOneAndUpdate(
             { email },
             { $set: { isEmailVerified: true, emailVerifiedAt: at } },
+            { new: true },
+        ),
+    /**
+     * The address is the account's login identity, so it only moves once the
+     * new inbox has proven itself — and it lands already verified, because
+     * entering the code IS the proof.
+     */
+    applyEmailChange: (id, email, at) =>
+        User.findByIdAndUpdate(
+            id,
+            { $set: { email, isEmailVerified: true, emailVerifiedAt: at } },
             { new: true },
         ),
 };
@@ -103,7 +120,11 @@ export const createEmailOtpService = ({
         // --- Per-email rate limits ------------------------------------------
         // Checked before anything else, and against rows that exist for
         // unregistered addresses too, so the 429 is not an existence oracle.
-        const { count, lastRequestAt } = await store.usage(address, new Date(now() - HOUR_MS));
+        const { count, lastRequestAt } = await store.usage(
+            address,
+            new Date(now() - HOUR_MS),
+            PURPOSE_VERIFICATION,
+        );
 
         if (lastRequestAt) {
             const sinceLast = now() - new Date(lastRequestAt).getTime();
@@ -130,10 +151,11 @@ export const createEmailOtpService = ({
 
         // A fresh code retires the previous one — two live codes would double
         // the guessing surface.
-        await store.invalidateActive(address, issuedAt);
+        await store.invalidateActive(address, issuedAt, PURPOSE_VERIFICATION);
 
         const record = await store.create({
             email: address,
+            purpose: PURPOSE_VERIFICATION,
             codeHash: eligible ? hashOtpCode(code, address) : null,
             dispatched: eligible,
             attempts: 0,
@@ -195,7 +217,7 @@ export const createEmailOtpService = ({
             throw makeError(message);
         };
 
-        const record = await store.findLatestActive(address, new Date(now()));
+        const record = await store.findLatestActive(address, new Date(now()), PURPOSE_VERIFICATION);
 
         if (!record) {
             // Still hash, so "never requested" doesn't return faster than "wrong code".
@@ -251,7 +273,153 @@ export const createEmailOtpService = ({
         return { user };
     };
 
-    return { requestOtp, verifyOtp };
+    /**
+     * Starts a change of login address. The code goes to the NEW address, and
+     * nothing on the account moves until it comes back — so a typo costs the
+     * user one wasted email rather than access to their own account.
+     *
+     * Unlike requestOtp this is authenticated, so it can afford to be specific:
+     * "that address is taken" is not an enumeration leak here, because signup
+     * already reveals the same fact to anyone who asks.
+     */
+    const requestEmailChange = async ({ userId, newEmail, ip, requestId } = {}) => {
+        const address = normalizeEmail(newEmail);
+        const log = logger.child({ requestId, userId: String(userId), flow: "email_change_request" });
+
+        const user = await users.findById(userId);
+        if (!user) throw badRequest("Account not found.");
+
+        if (address === normalizeEmail(user.email)) {
+            throw badRequest("That is already your email address.");
+        }
+
+        if (await users.emailTaken(address, userId)) {
+            throw badRequest("That email address is already in use by another account.");
+        }
+
+        // Rate limits are keyed on the destination address, so one account
+        // cannot be used to spray codes at somebody else's inbox.
+        const { count, lastRequestAt } = await store.usage(
+            address,
+            new Date(now() - HOUR_MS),
+            PURPOSE_EMAIL_CHANGE,
+        );
+
+        if (lastRequestAt) {
+            const sinceLast = now() - new Date(lastRequestAt).getTime();
+            if (sinceLast < COOLDOWN_MS) {
+                const retryAfter = Math.ceil((COOLDOWN_MS - sinceLast) / 1000);
+                throw tooMany(`Please wait ${retryAfter} second(s) before requesting another code.`);
+            }
+        }
+
+        if (count >= MAX_REQUESTS_PER_HOUR) {
+            log.warn("Email-change hourly cap reached", { count });
+            throw tooMany("Too many change requests. Please try again in an hour.");
+        }
+
+        const code = generateOtpCode();
+        const issuedAt = new Date(now());
+
+        // Only one pending change per account at a time.
+        await store.invalidateActiveForUser(userId, issuedAt, PURPOSE_EMAIL_CHANGE);
+
+        const record = await store.create({
+            email: address,
+            purpose: PURPOSE_EMAIL_CHANGE,
+            userId,
+            codeHash: hashOtpCode(code, address),
+            dispatched: true,
+            attempts: 0,
+            consumedAt: null,
+            expiresAt: new Date(now() + OTP_TTL_MINUTES * 60 * 1000),
+            purgeAt: new Date(now() + RETENTION_MINUTES * 60 * 1000),
+            requestIp: ip,
+            createdAt: issuedAt,
+        });
+
+        try {
+            await emails.sendEmailChangeOtp({
+                to: address,
+                code,
+                ttlMinutes: OTP_TTL_MINUTES,
+                fullName: user.fullName,
+                requestId,
+            });
+        } catch (error) {
+            await store.consume(record._id ?? record.id, new Date(now()));
+            log.error("Email-change code failed after retries", { reason: error.message });
+            throw error;
+        }
+
+        log.info("Email-change code dispatched");
+
+        return {
+            ttlMinutes: OTP_TTL_MINUTES,
+            pendingEmail: address,
+            ...(process.env.NODE_ENV !== "production" ? { devOtpCode: code } : {}),
+        };
+    };
+
+    /** Completes the change once the new inbox proves itself. */
+    const verifyEmailChange = async ({ userId, code, requestId } = {}) => {
+        const startedAt = now();
+        const log = logger.child({ requestId, userId: String(userId), flow: "email_change_verify" });
+
+        const reject = async (message = GENERIC_VERIFY_FAILURE, makeError = badRequest) => {
+            await padTiming(startedAt);
+            throw makeError(message);
+        };
+
+        const record = await store.findLatestActiveForUser(
+            userId,
+            new Date(now()),
+            PURPOSE_EMAIL_CHANGE,
+        );
+
+        if (!record) {
+            log.warn("Email-change verify with no pending request");
+            return reject("No pending email change. Please request one first.");
+        }
+
+        if (record.attempts >= MAX_VERIFY_ATTEMPTS) {
+            await store.consume(record._id ?? record.id, new Date(now()));
+            return reject("Too many incorrect attempts. Please request a new code.", tooMany);
+        }
+
+        const candidate = hashOtpCode(String(code ?? ""), record.email);
+        const matches = Boolean(record.codeHash) && timingSafeEqual(record.codeHash, candidate);
+
+        if (!matches) {
+            const { attempts } = await store.recordAttempt(record._id ?? record.id);
+            if (attempts >= MAX_VERIFY_ATTEMPTS) {
+                await store.consume(record._id ?? record.id, new Date(now()));
+                log.warn("Email-change locked out", { attempts });
+                return reject("Too many incorrect attempts. Please request a new code.", tooMany);
+            }
+            log.warn("Email-change code mismatch", { attempts });
+            return reject();
+        }
+
+        // Re-checked at the last moment: someone else may have claimed the
+        // address during the ten minutes the code was valid.
+        if (await users.emailTaken(record.email, userId)) {
+            await store.consume(record._id ?? record.id, new Date(now()));
+            return reject("That email address is already in use by another account.");
+        }
+
+        await store.consume(record._id ?? record.id, new Date(now()));
+
+        const user = await users.applyEmailChange(userId, record.email, new Date(now()));
+        if (!user) return reject("Account not found.");
+
+        log.info("Email address changed");
+        await padTiming(startedAt);
+
+        return { user };
+    };
+
+    return { requestOtp, verifyOtp, requestEmailChange, verifyEmailChange };
 };
 
 /** The instance the controllers use. */

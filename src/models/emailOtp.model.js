@@ -30,11 +30,19 @@ const emailOtpSchema = new mongoose.Schema({
     // had no eligible account, in which case there is nothing to verify against.
     codeHash: { type: String, select: false, default: null },
 
+    // "email_verification" proves a new signup owns its address.
+    // "email_change"       proves an existing user owns the address they are
+    //                      moving TO — so the row is keyed on the NEW address
+    //                      and carries the user it belongs to.
     purpose: {
         type: String,
-        enum: ["email_verification"],
+        enum: ["email_verification", "email_change"],
         default: "email_verification",
     },
+
+    // Only set for email_change: binds the pending change to one account so a
+    // second user can't verify someone else's move.
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
 
     // False when no eligible account existed: the row is bookkeeping for the
     // rate limiter only, and no email was sent.

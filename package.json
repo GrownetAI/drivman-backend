@@ -10,6 +10,7 @@
     "mail:sink": "node scripts/devMailSink.js",
     "start": "node server.js",
     "test": "node --test tests/",
+    "fix:phone-index": "node scripts/fixPhoneIndex.js",
     "seed": "node src/seed/seed.js",
     "seed:fresh": "node src/seed/seed.js --fresh --admin"
   },

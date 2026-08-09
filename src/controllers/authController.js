@@ -34,7 +34,19 @@ import { logger } from "../utils/logger.js";
 const RESET_TOKEN_TTL_MIN = 15;
 
 const MAX_FAILED_ATTEMPTS = 5;
+
+/**
+ * Admins keep the lockout — they are the highest-value target in the system —
+ * but at a higher ceiling. Locking the one account that can unblock everyone
+ * else turns a fat-fingered password into an outage, and 20 guesses is still
+ * far too few to brute-force anything.
+ */
+const MAX_FAILED_ATTEMPTS_ADMIN = 20;
+
 const LOCK_DURATION_MS = 15 * 60 * 1000;
+
+const maxFailedAttemptsFor = (user) =>
+    user?.role === "admin" ? MAX_FAILED_ATTEMPTS_ADMIN : MAX_FAILED_ATTEMPTS;
 
 const sha256 = (v) => crypto.createHash("sha256").update(v).digest("hex");
 
@@ -229,7 +241,7 @@ export const resendVerification = sendEmailOtp;
 const registerFailedAttempt = async (user) => {
     const attempts = (user.failedLoginAttempts || 0) + 1;
     const update = { failedLoginAttempts: attempts };
-    if (attempts >= MAX_FAILED_ATTEMPTS) {
+    if (attempts >= maxFailedAttemptsFor(user)) {
         update.lockedUntil = new Date(Date.now() + LOCK_DURATION_MS);
         update.failedLoginAttempts = 0;
     }
@@ -255,36 +267,63 @@ export const login = asyncHandler(async (req, res) => {
     if (password && otp) throw badRequest("Provide either a password or an OTP, not both.");
     if (email && otp) throw badRequest("OTP login requires a phone number, not an email.");
 
-    const query = email ? { email: email.toLowerCase().trim() } : { phone: phone.trim() };
-
-    const user = await User.findOne(query).select(
-        "+password +failedLoginAttempts +lockedUntil",
-    );
+    // Email is unique, so it resolves to at most one account. A phone number is
+    // NOT unique — several accounts may share one — so it can resolve to many,
+    // and the credential is what picks between them.
+    const candidates = email
+        ? await User.find({ email: email.toLowerCase().trim() })
+              .select("+password +failedLoginAttempts +lockedUntil")
+              .limit(1)
+        : await User.find({ phone: phone.trim() }).select(
+              "+password +failedLoginAttempts +lockedUntil",
+          );
 
     // Uniform message for "no such user" and "wrong password" — revealing which
     // one it was would let an attacker enumerate registered accounts.
     const invalid = () => unauthorized("Invalid credentials.");
 
-    if (!user) {
+    if (!candidates.length) {
         // Still burn a little time so a missing account isn't detectably faster.
         if (password) await new Promise((r) => setTimeout(r, 120));
         throw invalid();
     }
 
-    if (user.isLocked()) {
-        const mins = Math.ceil((user.lockedUntil - Date.now()) / 60000);
+    // A locked account must not have its password tested, or the lockout would
+    // not actually slow anything down.
+    const unlocked = candidates.filter((candidate) => !candidate.isLocked());
+    if (!unlocked.length) {
+        const soonest = Math.min(...candidates.map((c) => c.lockedUntil.getTime()));
+        const mins = Math.ceil((soonest - Date.now()) / 60000);
         throw tooMany(`Account temporarily locked. Try again in ${mins} minute(s).`);
     }
 
-    if (!user.isActive) throw forbidden("This account has been deactivated.");
+    let user;
 
     if (password) {
-        const matches = await user.comparePassword(password);
-        if (!matches) {
-            await registerFailedAttempt(user);
+        // With a shared number the password is what identifies the account, so
+        // each candidate is checked before the attempt is called invalid.
+        for (const candidate of unlocked) {
+            if (await candidate.comparePassword(password)) {
+                user = candidate;
+                break;
+            }
+        }
+        if (!user) {
+            // Count the failure against every account on that number — otherwise
+            // sharing a phone would multiply the brute-force budget.
+            await Promise.all(unlocked.map(registerFailedAttempt));
             throw invalid();
         }
     } else {
+        // An OTP proves control of the number, not which account was intended,
+        // so it cannot disambiguate a shared one.
+        if (unlocked.length > 1) {
+            throw badRequest(
+                "Several accounts use this phone number. Please log in with your email and password instead.",
+            );
+        }
+        user = unlocked[0];
+
         const approved = await checkOtp(user.phone, otp);
         if (!approved) {
             await registerFailedAttempt(user);
@@ -295,6 +334,8 @@ export const login = asyncHandler(async (req, res) => {
             await User.updateOne({ _id: user._id }, { $set: { isPhoneVerified: true } });
         }
     }
+
+    if (!user.isActive) throw forbidden("This account has been deactivated.");
 
     // The gate the old code was missing: unverified accounts cannot get a session.
     // TEMPORARY — remove once real email provider is configured: SKIP_EMAIL_VERIFICATION
@@ -323,9 +364,17 @@ export const requestOtp = asyncHandler(async (req, res) => {
     }
 
     const genericMessage = "If that number is registered, an OTP has been sent.";
-    const user = await User.findOne({ phone: phone.trim() });
 
-    if (user && user.isEmailVerified && user.isActive) {
+    // Several accounts may share the number, so match an *eligible* one rather
+    // than the first one stored — otherwise a deactivated account sitting on the
+    // same number would suppress the OTP.
+    const user = await User.findOne({
+        phone: phone.trim(),
+        isEmailVerified: true,
+        isActive: true,
+    });
+
+    if (user) {
         try {
             await sendOtpSms(user.phone);
         } catch (err) {
